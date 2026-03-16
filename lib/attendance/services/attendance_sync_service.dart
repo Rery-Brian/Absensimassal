@@ -22,6 +22,8 @@ class AttendanceSyncService {
   final SupabaseClient _supabase = Supabase.instance.client;
 
   Timer? _autoSyncTimer;
+  DateTime? _nextSyncTime; // To track when next sync happens
+  DateTime? _queueStartTime; // <-- ADDED: To track when data started waiting
   StreamSubscription<ConnectivityResult>? _connectivitySubscription;
   bool _isSyncing = false;
   Completer<SyncResult>? _activeSyncCompleter;
@@ -36,6 +38,11 @@ class AttendanceSyncService {
 
   final _syncStatusController = StreamController<SyncStatus>.broadcast();
   Stream<SyncStatus> get syncStatusStream => _syncStatusController.stream;
+
+  // Expose next sync time, queue start time, and current interval for UI countdown
+  DateTime? get nextSyncTime => _nextSyncTime;
+  DateTime? get queueStartTime => _queueStartTime;
+  int get currentIntervalSeconds => _currentIntervalSeconds;
 
   // Get current sync state for UI attachment
   SyncStatus? get currentStatus {
@@ -75,6 +82,12 @@ class AttendanceSyncService {
 
   void _scheduleNextSync() {
     _autoSyncTimer?.cancel();
+
+    // Track next sync time for UI
+    _nextSyncTime = DateTime.now().add(
+      Duration(seconds: _currentIntervalSeconds),
+    );
+
     _autoSyncTimer = Timer(
       Duration(seconds: _currentIntervalSeconds),
       () async {
@@ -98,6 +111,7 @@ class AttendanceSyncService {
   // Stop auto sync
   void stopAutoSync() {
     _autoSyncTimer?.cancel();
+    _nextSyncTime = null;
     _connectivitySubscription?.cancel();
     _connectivitySubscription = null;
   }
@@ -128,8 +142,12 @@ class AttendanceSyncService {
 
     final pending = await _offlineDb.getUnsyncedCount();
     if (pending == 0) {
+      _queueStartTime = null; // Clear if nothing to sync
       return true; // Nothing to sync, consider success to keep interval low
     }
+
+    // Set queue start time if we have pending and it wasn't set yet
+    _queueStartTime ??= DateTime.now();
 
     final isOnline = await _checkConnectivity();
     if (!isOnline) {
@@ -145,7 +163,17 @@ class AttendanceSyncService {
     final result = await syncPendingAttendances();
 
     // If some records failed to sync, consider it a failure for backoff purposes
-    return result.success && result.failedCount == 0;
+    final success = result.success && result.failedCount == 0;
+
+    // If successful and all sent, clear queue start time
+    if (success) {
+      final remaining = await _offlineDb.getUnsyncedCount();
+      if (remaining == 0) {
+        _queueStartTime = null;
+      }
+    }
+
+    return success;
   }
 
   // Sync all pending attendances

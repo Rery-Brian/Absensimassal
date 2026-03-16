@@ -1,7 +1,9 @@
 import 'dart:math' as math;
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../../attendance/services/attendance_sync_service.dart';
+import '../../services/offline_database_service.dart';
 import '../../helpers/language_helper.dart';
 
 class SyncStatusDialog extends StatefulWidget {
@@ -27,12 +29,19 @@ class SyncStatusDialog extends StatefulWidget {
 class _SyncStatusDialogState extends State<SyncStatusDialog>
     with TickerProviderStateMixin {
   final AttendanceSyncService _syncService = AttendanceSyncService();
+  final OfflineDatabaseService _offlineDb = OfflineDatabaseService();
   SyncStatus? _currentStatus;
+  List<dynamic> _pendingOfflineRecords = [];
   bool _isFinished = false;
 
   late AnimationController _rotationController;
   late AnimationController _pulseController;
   late Animation<double> _pulseAnimation;
+
+  // Timer logic
+  int _elapsedTime = 0;
+  bool _isCountingDown = false;
+  Timer? _timer;
 
   @override
   void initState() {
@@ -53,11 +62,63 @@ class _SyncStatusDialogState extends State<SyncStatusDialog>
     );
 
     _currentStatus = _syncService.currentStatus;
+    _initializeCountdown();
+  }
+
+  void _initializeCountdown() async {
+    // Fetch pending offline records right away in case we are just counting down
+    if (_currentStatus == null) {
+      final pending = await _offlineDb.getUnsyncedAttendances();
+      if (mounted) {
+        setState(() {
+          _pendingOfflineRecords = pending;
+        });
+      }
+    }
+
+    final queueStartTime = _syncService.queueStartTime;
+    final nextSyncTime = _syncService.nextSyncTime;
+
+    if (queueStartTime != null) {
+      _elapsedTime = DateTime.now().difference(queueStartTime).inSeconds;
+      _isCountingDown = true;
+      _startTimer();
+      return;
+    }
+
+    if (nextSyncTime != null) {
+      final difference = nextSyncTime.difference(DateTime.now()).inSeconds;
+      if (difference > 0) {
+        _elapsedTime = 0; // Fallback if queue start unknown
+        _isCountingDown = true;
+        _startTimer();
+        return;
+      }
+    }
+    // If no active timer or time already passed, start sync immediately
     _startSync();
+  }
+
+  void _startTimer() {
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (mounted) {
+        setState(() {
+          _elapsedTime++;
+
+          final nextSyncTime = _syncService.nextSyncTime;
+          if (nextSyncTime != null && DateTime.now().isAfter(nextSyncTime)) {
+            _isCountingDown = false;
+            timer.cancel();
+            _startSync();
+          }
+        });
+      }
+    });
   }
 
   @override
   void dispose() {
+    _timer?.cancel();
     _rotationController.dispose();
     _pulseController.dispose();
     super.dispose();
@@ -77,24 +138,42 @@ class _SyncStatusDialogState extends State<SyncStatusDialog>
       }
     });
 
+    setState(() {
+      _isCountingDown = false;
+    });
+
     await _syncService.syncAllPendingAttendances();
 
     if (mounted) {
+      // Re-fetch records to see if we should continue counting up
+      _pendingOfflineRecords = await _offlineDb.getUnsyncedAttendances();
+
       setState(() {
-        _isFinished = true;
-        _rotationController.stop();
-        _pulseController.stop();
+        if (_pendingOfflineRecords.isNotEmpty) {
+          _isFinished = false;
+          _isCountingDown = true;
+          _startTimer();
+        } else {
+          _isFinished = true;
+          _rotationController.stop();
+          _pulseController.stop();
+        }
       });
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final isLoading = _currentStatus?.isLoading ?? true;
+    final isLoading = _isCountingDown
+        ? false
+        : (_currentStatus?.isLoading ?? true);
     final isError = _currentStatus?.isError ?? false;
-    final records = _currentStatus?.records;
+    // Prioritize active sync records, otherwise show the ones we found offline
+    final records = _currentStatus?.records ?? _pendingOfflineRecords;
     final progress = _currentStatus?.progress ?? 0;
-    final total = _currentStatus?.total ?? 0;
+    // Use length of pending records if active sync hasn't started
+    final total =
+        _currentStatus?.total ?? (_isCountingDown ? records.length : 0);
 
     final Color accentColor = const Color(0xFF6C47FF);
     final Color successColor = const Color(0xFF22C55E);
@@ -146,9 +225,12 @@ class _SyncStatusDialogState extends State<SyncStatusDialog>
                     _buildStatusIcon(
                       isLoading: isLoading,
                       isError: isError,
+                      isCountingDown: _isCountingDown,
+                      hasRecords: records.isNotEmpty,
                       accentColor: accentColor,
                       successColor: successColor,
                       errorColor: errorColor,
+                      countdownColor: Colors.grey.shade400,
                     ),
                     const SizedBox(width: 14),
                     Expanded(
@@ -168,7 +250,13 @@ class _SyncStatusDialogState extends State<SyncStatusDialog>
                           ),
                           const SizedBox(height: 2),
                           Text(
-                            isLoading
+                            _isCountingDown
+                                ? (records.isNotEmpty
+                                      ? AppLanguage.tr(
+                                          'Waiting to sync... ($_elapsedTime s)',
+                                        )
+                                      : AppLanguage.tr('All data synchronized'))
+                                : isLoading
                                 ? (total > 0
                                       ? '$progress of $total records'
                                       : AppLanguage.tr('Initializing...'))
@@ -177,7 +265,11 @@ class _SyncStatusDialogState extends State<SyncStatusDialog>
                                 : AppLanguage.tr('All data synchronized'),
                             style: TextStyle(
                               fontSize: 13,
-                              color: isLoading
+                              color: _isCountingDown
+                                  ? (records.isNotEmpty
+                                        ? Colors.orange
+                                        : Colors.grey.shade500)
+                                  : isLoading
                                   ? accentColor
                                   : isError
                                   ? errorColor
@@ -252,7 +344,7 @@ class _SyncStatusDialogState extends State<SyncStatusDialog>
               const SizedBox(height: 20),
 
               // Records section header
-              if (records != null && records.isNotEmpty) ...[
+              if (records.isNotEmpty) ...[
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 24),
                   child: Row(
@@ -374,9 +466,18 @@ class _SyncStatusDialogState extends State<SyncStatusDialog>
                     child: FilledButton(
                       onPressed: _isFinished
                           ? () => Navigator.of(context).pop()
+                          : _isCountingDown
+                          ? () {
+                              _timer?.cancel();
+                              setState(() {
+                                _elapsedTime = 0;
+                                _isCountingDown = false;
+                              });
+                              _startSync();
+                            }
                           : null,
                       style: FilledButton.styleFrom(
-                        backgroundColor: _isFinished
+                        backgroundColor: _isCountingDown || _isFinished
                             ? accentColor
                             : Colors.grey.shade200,
                         disabledBackgroundColor: Colors.grey.shade200,
@@ -386,13 +487,19 @@ class _SyncStatusDialogState extends State<SyncStatusDialog>
                         ),
                       ),
                       child: Text(
-                        _isFinished
-                            ? AppLanguage.tr('Done')
+                        _isCountingDown
+                            ? AppLanguage.tr(
+                                'Sync',
+                              ) // User requested to just say "Sync" and not have two views
+                            : _isFinished
+                            ? AppLanguage.tr(
+                                'Sync',
+                              ) // Previously 'Done', now they want it to just say Sync
                             : AppLanguage.tr('Syncing...'),
                         style: TextStyle(
                           fontWeight: FontWeight.w600,
                           fontSize: 15,
-                          color: _isFinished
+                          color: _isCountingDown || _isFinished
                               ? Colors.white
                               : Colors.grey.shade500,
                         ),
@@ -411,9 +518,12 @@ class _SyncStatusDialogState extends State<SyncStatusDialog>
   Widget _buildStatusIcon({
     required bool isLoading,
     required bool isError,
+    required bool isCountingDown,
+    required bool hasRecords,
     required Color accentColor,
     required Color successColor,
     required Color errorColor,
+    required Color countdownColor,
   }) {
     if (isLoading) {
       return ScaleTransition(
@@ -437,6 +547,18 @@ class _SyncStatusDialogState extends State<SyncStatusDialog>
             ),
           ),
         ),
+      );
+    }
+
+    if (isCountingDown && hasRecords) {
+      return Container(
+        width: 44,
+        height: 44,
+        decoration: BoxDecoration(
+          color: countdownColor.withOpacity(0.1),
+          shape: BoxShape.circle,
+        ),
+        child: Icon(Icons.schedule_rounded, color: countdownColor, size: 22),
       );
     }
 
