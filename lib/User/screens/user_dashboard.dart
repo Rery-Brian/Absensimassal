@@ -14,6 +14,7 @@ import 'package:absensimassal/Petugas/screens/petugas_dashboard.dart';
 import '../../helpers/timezone_helper.dart';
 import '../../Petugas/screens/selfie_attendance_flow_page.dart';
 import '../../helpers/language_helper.dart';
+import '../../attendance/services/attendance_service.dart'; // ✅ Added
 
 class UserDashboardPage extends StatefulWidget {
   final int organizationMemberId;
@@ -36,6 +37,7 @@ class UserDashboardPage extends StatefulWidget {
 class _UserDashboardPageState extends State<UserDashboardPage>
     with SingleTickerProviderStateMixin {
   final BiometricService _biometricService = BiometricService();
+  final AttendanceService _attendanceService = AttendanceService(); // ✅ Added
   final RoleService _roleService = RoleService();
   final _supabase = Supabase.instance.client;
 
@@ -87,6 +89,14 @@ class _UserDashboardPageState extends State<UserDashboardPage>
     _loadOrganizationTimezone();
     _loadOrganizationInfo();
     _initRealTimeClock();
+    _syncShifts(); // ✅ Proactive shift sync
+  }
+
+  void _syncShifts() {
+    final organizationId = widget.memberData['organization_id'] as int?;
+    if (organizationId != null) {
+      _attendanceService.getAvailableShifts(organizationId: organizationId);
+    }
   }
 
   void _initRealTimeClock() {

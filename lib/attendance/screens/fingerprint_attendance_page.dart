@@ -323,38 +323,20 @@ class _FingerprintAttendancePageState extends State<FingerprintAttendancePage> {
     if (orgId == null) return;
     setState(() => _isLoadingModes = true);
     try {
-      final modes = await _supabase
-          .from('shifts')
-          .select('id, code, name, start_time, end_time')
-          .eq('organization_id', orgId)
-          .eq('is_active', true)
-          .order('name', ascending: true);
+      final modes = await _attendanceService.getAvailableShifts(
+        organizationId: orgId,
+      );
 
       if (mounted) {
         setState(() {
           _availableModes = List<Map<String, dynamic>>.from(modes);
-          if (_availableModes.isNotEmpty) _selectedMode = _availableModes.first;
+          if (_availableModes.isNotEmpty && _selectedMode == null) {
+            _selectedMode = _availableModes.first;
+          }
         });
-
-        // Cache shifts for offline use
-        await _offlineDb.cacheShifts(orgId, _availableModes);
       }
     } catch (e) {
-      debugPrint('🌐 Offline/Error loading modes result: $e');
-
-      // Fallback to cache
-      final cachedShifts = await _offlineDb.getShifts(orgId);
-      if (mounted) {
-        setState(() {
-          _availableModes = List<Map<String, dynamic>>.from(cachedShifts);
-          if (_availableModes.isNotEmpty) _selectedMode = _availableModes.first;
-        });
-        if (_availableModes.isNotEmpty) {
-          debugPrint(
-            '💾 Using cached shifts (${_availableModes.length} found)',
-          );
-        }
-      }
+      debugPrint('🌐 Error loading modes: $e');
     } finally {
       if (mounted) setState(() => _isLoadingModes = false);
     }

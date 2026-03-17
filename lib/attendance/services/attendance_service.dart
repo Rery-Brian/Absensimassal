@@ -10,6 +10,76 @@ class AttendanceService {
   final SupabaseClient _supabase = Supabase.instance.client;
   final OfflineDatabaseService _offlineDb = OfflineDatabaseService();
 
+  /// Centralized method to get available shifts for an organization.
+  /// Proactively fetches from Supabase and updates local cache in the background.
+  /// Falls back to local cache if offline.
+  Future<List<Map<String, dynamic>>> getAvailableShifts({
+    required int organizationId,
+  }) async {
+    // Step 1: Load from local SQLite cache first (instant, works offline)
+    List<Map<String, dynamic>> cachedShifts = [];
+    try {
+      cachedShifts = await _offlineDb.getShifts(organizationId);
+      if (cachedShifts.isNotEmpty) {
+        // debugPrint('📦 Loaded ${cachedShifts.length} shifts from SQLite cache for org $organizationId');
+      }
+    } catch (e) {
+      debugPrint('⚠️ Failed to read SQLite cache for shifts: $e');
+    }
+
+    // Step 2: Background sync from Supabase to keep cache fresh
+    _syncShiftsFromSupabase(organizationId);
+
+    // Step 3: Return cached data immediately if available
+    if (cachedShifts.isNotEmpty) {
+      return cachedShifts;
+    }
+
+    // Step 4: If cache is empty (first run), wait for the Supabase fetch
+    debugPrint('📴 SQLite shift cache empty, waiting for Supabase fetch...');
+    try {
+      final results = await _fetchShiftsFromSupabase(organizationId);
+      return results;
+    } catch (e) {
+      debugPrint('❌ Supabase shift fetch also failed: $e');
+      return [];
+    }
+  }
+
+  /// Internal helper to fetch shifts from Supabase and cache them
+  Future<List<Map<String, dynamic>>> _fetchShiftsFromSupabase(
+    int organizationId,
+  ) async {
+    final results = await _supabase
+        .from('shifts')
+        .select('id, code, name, start_time, end_time, description, is_active')
+        .eq('organization_id', organizationId)
+        .eq('is_active', true)
+        .order('name', ascending: true);
+
+    final shifts = List<Map<String, dynamic>>.from(results);
+
+    // Update cache efficiently
+    if (shifts.isNotEmpty) {
+      await _offlineDb.cacheShifts(organizationId, shifts);
+    }
+
+    return shifts;
+  }
+
+  /// Background sync: fetch from Supabase and update SQLite
+  void _syncShiftsFromSupabase(int organizationId) {
+    Future(() async {
+      try {
+        // debugPrint('🔄 Background shift sync for org $organizationId...');
+        await _fetchShiftsFromSupabase(organizationId);
+        // debugPrint('✅ Background shift sync done for org $organizationId');
+      } catch (e) {
+        // debugPrint('⚠️ Background shift sync skipped (offline?): $e');
+      }
+    });
+  }
+
   // -- Schedule Logic Start --
 
   /// Determines the effective schedule for a member on a specific date (default: today)

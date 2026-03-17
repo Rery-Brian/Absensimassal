@@ -441,18 +441,43 @@ class OfflineDatabaseService {
   Future<int> insertAttendance(OfflineAttendance attendance) async {
     try {
       final db = await database;
+
+      // ✅ NEW: Prevent duplicate "stacking" in the offline queue
+      // For face recognition, we use organizationMemberId. For RFID, we use cardNumber.
+      // We skip duplicate if an unsynced record of the same type exists.
+      bool isDuplicate = false;
+
+      if (attendance.organizationMemberId != null) {
+        isDuplicate = await hasDuplicateAttendance(
+          organizationMemberId: attendance.organizationMemberId!,
+          eventType: attendance.eventType,
+          attendanceDate: attendance.timestamp.split('T')[0],
+          method: attendance.method,
+          workTimeMode: attendance.workTimeMode,
+        );
+      } else {
+        // For RFID, check by cardNumber if missing organizationMemberId
+        final results = await db.query(
+          'offline_attendances',
+          where: 'card_number = ? AND event_type = ? AND is_synced = 0',
+          whereArgs: [attendance.cardNumber, attendance.eventType],
+          limit: 1,
+        );
+        isDuplicate = results.isNotEmpty;
+      }
+
+      if (isDuplicate) {
+        debugPrint(
+          '🚫 OfflineDatabaseService: Skipping duplicate ${attendance.eventType} for member ${attendance.organizationMemberId ?? attendance.cardNumber}',
+        );
+        return -1; // Indicate it was skipped but not a hard error
+      }
+
       final map = attendance.toMap();
-      // debugPrint('📝 Inserting attendance: method=${attendance.method}, memberId=${attendance.organizationMemberId}, eventType=${attendance.eventType}');
       final id = await db.insert('offline_attendances', map);
-      // debugPrint('✅ Attendance inserted with ID: $id');
       return id;
     } catch (e) {
       debugPrint('❌ Error inserting offline attendance: $e');
-      /*
-      debugPrint('   Method: ${attendance.method}');
-      debugPrint('   Member ID: ${attendance.organizationMemberId}');
-      debugPrint('   Event Type: ${attendance.eventType}');
-      */
       rethrow;
     }
   }
@@ -965,25 +990,19 @@ class OfflineDatabaseService {
     required int organizationMemberId,
     required String eventType,
     required String attendanceDate,
-    String? workTimeMode, // ✅ NEW: Check shift-specific duplicates
+    required String method,
+    String? workTimeMode,
   }) async {
     try {
       final db = await database;
 
-      final now = DateTime.now().toUtc();
-      final twoMinutesAgo = now
-          .subtract(const Duration(minutes: 2))
-          .toIso8601String();
-
+      // ✅ REFINED: Check for any UNSYNCED record of the same type
+      // This prevents "stacking" in the offline queue as requested.
       String whereClause =
-          'organization_member_id = ? AND event_type = ? AND created_at > ?';
-      List<dynamic> whereArgs = [
-        organizationMemberId,
-        eventType,
-        twoMinutesAgo,
-      ];
+          'organization_member_id = ? AND event_type = ? AND method = ? AND is_synced = 0';
+      List<dynamic> whereArgs = [organizationMemberId, eventType, method];
 
-      // ✅ ENHANCED: For multi-shift, also check work_time_mode
+      // Also check work_time_mode if provided (to distinguish break vs work)
       if (workTimeMode != null && workTimeMode.isNotEmpty) {
         whereClause += ' AND work_time_mode = ?';
         whereArgs.add(workTimeMode);
@@ -998,12 +1017,8 @@ class OfflineDatabaseService {
       );
 
       if (result.isNotEmpty) {
-        final lastRecord = result.first;
-        final diff = now.difference(
-          DateTime.parse(lastRecord['created_at'] as String),
-        );
         debugPrint(
-          '⚠️ Duplicate check: Last $eventType was ${diff.inSeconds}s ago (Mode: ${lastRecord['work_time_mode']})',
+          '⚠️ Duplicate check: Found unsynced $eventType in queue for member $organizationMemberId',
         );
         return true;
       }

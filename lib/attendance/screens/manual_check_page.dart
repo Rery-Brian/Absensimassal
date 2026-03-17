@@ -47,6 +47,10 @@ class _ManualCheckPageState extends State<ManualCheckPage> {
   List<Map<String, dynamic>> _filteredEmployees = [];
   bool _isLoadingEmployees = true;
   bool _isSubmitting = false;
+  bool _isLoadingModes = false;
+  List<Map<String, dynamic>> _availableModes = [];
+  Map<String, dynamic>? _selectedMode;
+  String? _workTimeMode;
 
   bool _isOnline = true;
   StreamSubscription<ConnectivityResult>? _connectivitySub;
@@ -59,6 +63,7 @@ class _ManualCheckPageState extends State<ManualCheckPage> {
     super.initState();
     _organizationId = widget.memberData['organization_id'] as int?;
     _loadEmployees();
+    _loadAvailableModes();
     _checkConnectivity();
   }
 
@@ -147,6 +152,131 @@ class _ManualCheckPageState extends State<ManualCheckPage> {
         setState(() => _isLoadingEmployees = false);
       }
     }
+  }
+
+  Future<void> _loadAvailableModes() async {
+    if (_isLoadingModes) return;
+    final orgId = _organizationId;
+    if (orgId == null) return;
+
+    if (mounted) setState(() => _isLoadingModes = true);
+    try {
+      final modes = await _attendanceService.getAvailableShifts(
+        organizationId: orgId,
+      );
+
+      if (mounted) {
+        setState(() {
+          _availableModes = List<Map<String, dynamic>>.from(modes);
+          // Try to match initial shift name if provided
+          if (widget.initialShiftName != null) {
+            final initial = _availableModes
+                .cast<Map<String, dynamic>?>()
+                .firstWhere(
+                  (m) =>
+                      (m?['code'] == widget.initialShiftName ||
+                          m?['name'] == widget.initialShiftName),
+                  orElse: () => null,
+                );
+            if (initial != null) {
+              _selectedMode = initial;
+              _workTimeMode = initial['code'] ?? initial['name'];
+            }
+          }
+          if (_selectedMode == null && _availableModes.isNotEmpty) {
+            _selectedMode = _availableModes.first;
+            _workTimeMode = _selectedMode!['code'] ?? _selectedMode!['name'];
+          }
+        });
+      }
+    } catch (e) {
+      debugPrint('🌐 Error loading modes: $e');
+    } finally {
+      if (mounted) setState(() => _isLoadingModes = false);
+    }
+  }
+
+  Future<void> _showShiftSelectionDialog() async {
+    await showDialog(
+      context: context,
+      builder: (context) => Dialog(
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Select Shift',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.black87,
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+              const Divider(),
+              if (_availableModes.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 20),
+                  child: Text(
+                    'No shifts available',
+                    style: TextStyle(color: Colors.grey),
+                  ),
+                )
+              else
+                Flexible(
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: _availableModes.length,
+                    itemBuilder: (context, idx) {
+                      final mode = _availableModes[idx];
+                      final isSelected = _selectedMode?['id'] == mode['id'];
+                      return ListTile(
+                        leading: Icon(
+                          Icons.schedule,
+                          color:
+                              isSelected ? const Color(0xFF9333EA) : Colors.grey,
+                        ),
+                        title: Text(
+                          mode['name'] ?? '-',
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        subtitle: Text(
+                          '${mode['start_time'] ?? ''} - ${mode['end_time'] ?? ''}',
+                        ),
+                        trailing: isSelected
+                            ? const Icon(
+                              Icons.check_circle,
+                              color: Color(0xFF9333EA),
+                            )
+                            : null,
+                        onTap: () {
+                          setState(() {
+                            _selectedMode = mode;
+                            _workTimeMode = mode['code'] ?? mode['name'];
+                          });
+                          Navigator.pop(context);
+                        },
+                      );
+                    },
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _selectDate() async {
@@ -371,7 +501,7 @@ class _ManualCheckPageState extends State<ManualCheckPage> {
             : 'MANUAL_$_selectedEmployeeId',
         eventType: _eventType,
         method: widget.sourceMode ?? 'manual',
-        workTimeMode: widget.initialShiftName, // <-- ADDED THIS
+        workTimeMode: _workTimeMode,
         timestamp: TimezoneHelper.formatUtcForSupabase(eventDateTime),
         notes: _notesController.text,
         isSynced: syncSuccess,
@@ -456,65 +586,11 @@ class _ManualCheckPageState extends State<ManualCheckPage> {
                   _buildEmployeeSelector(cardColor, textColor, accentColor),
 
                   const SizedBox(height: 24),
-                  if (widget.sourceMode != null ||
-                      widget.initialShiftName != null) ...[
-                    _buildSectionTitle('Attendance Context', textColor),
-                    const SizedBox(height: 12),
-                    Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: accentColor.withValues(alpha: 0.1),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(
-                          color: accentColor.withValues(alpha: 0.3),
-                        ),
-                      ),
-                      child: Column(
-                        children: [
-                          if (widget.sourceMode != null)
-                            Row(
-                              children: [
-                                Icon(
-                                  Icons.devices,
-                                  color: accentColor,
-                                  size: 20,
-                                ),
-                                const SizedBox(width: 8),
-                                Text(
-                                  'Mode: ${widget.sourceMode}',
-                                  style: TextStyle(
-                                    color: textColor,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          if (widget.sourceMode != null &&
-                              widget.initialShiftName != null)
-                            const SizedBox(height: 8),
-                          if (widget.initialShiftName != null)
-                            Row(
-                              children: [
-                                Icon(
-                                  Icons.schedule,
-                                  color: accentColor,
-                                  size: 20,
-                                ),
-                                const SizedBox(width: 8),
-                                Text(
-                                  'Shift: ${widget.initialShiftName}',
-                                  style: TextStyle(
-                                    color: textColor,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ],
-                            ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 24),
-                  ],
+                  _buildSectionTitle('Select Shift / Mode', textColor),
+                  const SizedBox(height: 12),
+                  _buildShiftSelector(cardColor, textColor, accentColor),
+
+                  const SizedBox(height: 24),
 
                   _buildSectionTitle('Attendance Type', textColor),
                   const SizedBox(height: 12),
@@ -617,6 +693,53 @@ class _ManualCheckPageState extends State<ManualCheckPage> {
             style: TextStyle(color: color.withOpacity(0.5), fontSize: 12),
           ),
       ],
+    );
+  }
+
+  Widget _buildShiftSelector(
+    Color cardColor,
+    Color textColor,
+    Color accentColor,
+  ) {
+    return InkWell(
+      onTap: _showShiftSelectionDialog,
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+        decoration: BoxDecoration(
+          color: cardColor,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: textColor.withOpacity(0.1)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.03),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.schedule, color: accentColor),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                _selectedMode?['name'] ?? 'Choose a shift',
+                style: TextStyle(
+                  color: textColor.withOpacity(
+                    _selectedMode == null ? 0.5 : 1.0,
+                  ),
+                  fontSize: 15,
+                ),
+              ),
+            ),
+            Icon(
+              Icons.keyboard_arrow_down_rounded,
+              color: textColor.withOpacity(0.5),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

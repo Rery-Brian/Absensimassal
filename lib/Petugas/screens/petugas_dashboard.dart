@@ -102,6 +102,14 @@ class _PetugasDashboardPageState extends State<PetugasDashboardPage> {
     _loadWeeklyOverview();
     _initRealTimeClock();
     _initActivityStream();
+    _syncShifts(); // ✅ Proactive shift sync
+  }
+
+  void _syncShifts() {
+    final organizationId = widget.memberData['organization_id'] as int?;
+    if (organizationId != null) {
+      _attendanceService.getAvailableShifts(organizationId: organizationId);
+    }
   }
 
   void _initRealTimeClock() {
@@ -315,6 +323,7 @@ class _PetugasDashboardPageState extends State<PetugasDashboardPage> {
     _loadTodayStats();
     _loadRecentActivities();
     _loadWeeklyOverview();
+    _syncShifts(); // ✅ Ensure shifts are updated on refresh
   }
 
   String _composeUserName(Map<String, dynamic>? profile) {

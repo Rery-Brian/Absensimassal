@@ -367,6 +367,7 @@ class _FaceAttendanceMultiUserPageState
         organizationMemberId: memberId,
         eventType: attendanceType,
         attendanceDate: todayStr,
+        method: 'face_recognition_kiosk',
       );
       if (isDuplicate) {
         debugPrint(
@@ -1588,6 +1589,7 @@ class _FaceAttendanceMultiUserPageState
         organizationMemberId: memberId,
         eventType: attendanceType,
         attendanceDate: todayStr,
+        method: 'face_recognition_kiosk',
       );
 
       if (alreadyRecorded) {
@@ -1754,36 +1756,17 @@ class _FaceAttendanceMultiUserPageState
 
     setState(() => _isLoadingModes = true);
     try {
-      final modes = await _supabase
-          .from('shifts')
-          .select('id, code, name, start_time, end_time, description')
-          .eq('organization_id', orgId)
-          .eq('is_active', true)
-          .order('name', ascending: true);
+      final modes = await _attendanceService.getAvailableShifts(
+        organizationId: orgId,
+      );
 
       if (mounted) {
         setState(() {
           _availableModes = List<Map<String, dynamic>>.from(modes);
         });
-
-        // Cache shifts for offline use
-        await _offlineDb.cacheShifts(orgId, _availableModes);
       }
     } catch (e) {
-      debugPrint('🌐 Offline/Error loading modes result: $e');
-
-      // Fallback to cache
-      final cachedShifts = await _offlineDb.getShifts(orgId);
-      if (mounted) {
-        setState(() {
-          _availableModes = List<Map<String, dynamic>>.from(cachedShifts);
-        });
-        if (_availableModes.isNotEmpty) {
-          debugPrint(
-            '💾 Using cached shifts (${_availableModes.length} found)',
-          );
-        }
-      }
+      debugPrint('🌐 Error loading modes: $e');
     } finally {
       if (mounted) setState(() => _isLoadingModes = false);
     }
