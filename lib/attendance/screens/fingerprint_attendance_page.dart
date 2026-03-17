@@ -1398,7 +1398,16 @@ class _FingerprintAttendancePageState extends State<FingerprintAttendancePage> {
         default:
           typeDisplay = pickedMode;
       }
-      _showDuplicateOverlay("Mode set: $typeDisplay");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Mode $typeDisplay dipilih'
+            '${_selectedMode != null ? ' • ${_selectedMode!['name']}' : ''}',
+          ),
+          backgroundColor: const Color(0xFF9333EA),
+          duration: const Duration(seconds: 2),
+        ),
+      );
     }
   }
 }
