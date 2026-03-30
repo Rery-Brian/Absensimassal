@@ -640,6 +640,13 @@ class BiometricService {
           }
           similarity = maxSimilarity;
         } else {
+          final regEmbedding = List<double>.from(registeredTemplate['embedding'] ?? []);
+          final capEmbedding = List<double>.from(capturedTemplate['embedding'] ?? []);
+          
+          if (regEmbedding.length != capEmbedding.length) {
+            continue; // Mathematical incompatibility
+          }
+          
           similarity = faceService.compareFaces(
             capturedTemplate,
             registeredTemplate,

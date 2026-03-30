@@ -408,6 +408,12 @@ class FaceRecognitionTFLiteService {
     final embedding2 = List<double>.from(template2['embedding'] ?? []);
 
     if (embedding1.isEmpty || embedding2.isEmpty) return -1.0;
+    
+    // ✅ CRITICAL SAFETY: Prevent RangeError if embeddings come from different models
+    if (embedding1.length != embedding2.length) {
+      debugPrint('⚠️ Embedding length mismatch: ${embedding1.length} vs ${embedding2.length}. Skipping comparison.');
+      return -1.0;
+    }
 
     // Dot Product & Norms
     double dotProduct = 0.0;

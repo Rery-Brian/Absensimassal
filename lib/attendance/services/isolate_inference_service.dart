@@ -670,34 +670,20 @@ List<double> _runInference(
 
 // Standard Float32 Preprocessing (-1 to 1)
 List<dynamic> _preprocessImageFloat(img.Image image, int inputSize) {
-  // ✅ SYNC: Replicating Wajah project's specific (jumbled) preprocessing logic
-  // This logic iterates by channels then pixels, which is non-standard but required for parity.
-  final channels = 3;
+  // ✅ STABLE: Using standard interleaved [H, W, C] preprocessing
   final height = inputSize;
   final width = inputSize;
+  final channels = 3;
 
-  // 1. Flatten into [R0, G0, B0, R1, G1, B1, ...]
-  final float32Array = Float32List(width * height * 3);
+  final float32Array = Float32List(1 * height * width * channels);
   int i = 0;
   for (final pixel in image) {
-    float32Array[i++] = pixel.r.toDouble();
-    float32Array[i++] = pixel.g.toDouble();
-    float32Array[i++] = pixel.b.toDouble();
+    float32Array[i++] = (pixel.r - 127.5) / 127.5;
+    float32Array[i++] = (pixel.g - 127.5) / 127.5;
+    float32Array[i++] = (pixel.b - 127.5) / 127.5;
   }
 
-  // 2. Reshape into [1, 160, 160, 3] but using (C, H, W) iteration order for data filling
-  final reshapedArray = Float32List(1 * height * width * channels);
-  for (int c = 0; c < channels; c++) {
-    for (int h = 0; h < height; h++) {
-      for (int w = 0; w < width; w++) {
-        int index = c * height * width + h * width + w;
-        // Using the exact same indexing as Wajah project
-        reshapedArray[index] = (float32Array[index] - 127.5) / 127.5;
-      }
-    }
-  }
-
-  return reshapedArray.reshape([1, width, height, channels]);
+  return float32Array.reshape([1, height, width, channels]);
 }
 
 // Uint8 Preprocessing (0 to 255)
